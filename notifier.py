@@ -16,6 +16,7 @@ Returns one of: "approve", "reject", "timeout".
 import os
 import time
 import json
+import unicodedata
 
 import requests
 
@@ -28,6 +29,34 @@ TIMEOUT_SECONDS = 30 * 60   # 30 minutes
 
 APPROVE_MARKER = "APPROVE"
 REJECT_MARKER = "REJECT"
+
+
+# Common non-latin-1 characters mapped to safe ASCII equivalents. requests
+# encodes HTTP headers as latin-1, so anything outside it raises
+# UnicodeEncodeError unless we transliterate first.
+_HEADER_REPLACEMENTS = {
+    "—": "-",    # em dash
+    "–": "-",    # en dash
+    "‒": "-",    # figure dash
+    "―": "-",    # horizontal bar
+    "‘": "'",    # left single quote
+    "’": "'",    # right single quote
+    "“": '"',    # left double quote
+    "”": '"',    # right double quote
+    "…": "...",  # ellipsis
+    " ": " ",    # non-breaking space
+}
+
+
+def _ascii_safe(value: str) -> str:
+    """Make a string safe for latin-1 HTTP headers using ASCII equivalents."""
+    if value is None:
+        return value
+    for bad, good in _HEADER_REPLACEMENTS.items():
+        value = value.replace(bad, good)
+    # Transliterate any remaining non-ASCII (e.g. accents, emoji) to ASCII,
+    # dropping characters with no equivalent.
+    return unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
 
 
 def _topic_url() -> str:
@@ -99,6 +128,9 @@ def send_approval_request(topic: str, video_id: str = None) -> int:
         "Tags": "clapper",
         "Actions": _actions_header(),
     }
+    # Sanitize every header value so non-latin-1 characters (em dashes, emoji,
+    # accents) can't raise UnicodeEncodeError when requests encodes the headers.
+    headers = {key: _ascii_safe(value) for key, value in headers.items()}
 
     thumb = _thumbnail_path(topic)
     if os.path.exists(thumb):
