@@ -122,9 +122,10 @@ def run():
         return
 
     # decision == "timeout"
-    print("  No response within 30 minutes. Deleting unlisted video; "
-          "topic stays at current index and will retry next run.")
-    delete_video(video_id)
+    print("  No response within the approval window. Leaving the video "
+          "unlisted and advancing to the next topic.")
+    save_progress(index + 1)
+    print(f"Progress saved. Next up: {topics[index+1] if index+1 < len(topics) else 'All done!'}")
     print(f"\n{'='*50}\n")
 
 

@@ -25,7 +25,12 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "reelpipelineethan1212")
 APPROVE_TRIGGER_TOKEN = os.environ.get("APPROVE_TRIGGER_TOKEN", "")
 
 POLL_INTERVAL = 30          # seconds between polls
-TIMEOUT_SECONDS = 30 * 60   # 30 minutes
+# Approval window. Kept safely below the CI job's timeout-minutes (360) so the
+# pipeline reaches its own timeout branch and advances to the next topic
+# gracefully, instead of being hard-killed by GitHub mid-wait (which would
+# leave no chance to move on). ~5.5 hours leaves headroom for generation and
+# the progress commit inside the 6-hour job ceiling. Set to None for no limit.
+TIMEOUT_SECONDS = int(5.5 * 60 * 60)   # 5.5 hours
 
 APPROVE_MARKER = "APPROVE"
 REJECT_MARKER = "REJECT"
@@ -183,16 +188,20 @@ def wait_for_approval(topic: str, video_id: str = None) -> str:
     Returns "approve", "reject", or "timeout".
     """
     since = send_approval_request(topic, video_id)
-    deadline = since + TIMEOUT_SECONDS
+    unlimited = TIMEOUT_SECONDS is None
+    deadline = None if unlimited else since + TIMEOUT_SECONDS
 
-    while time.time() < deadline:
+    while unlimited or time.time() < deadline:
         time.sleep(POLL_INTERVAL)
         decision = poll_for_response(since)
         if decision in ("approve", "reject"):
             print(f"  [ntfy] decision received: {decision}")
             return decision
-        remaining = int((deadline - time.time()) / 60)
-        print(f"  [ntfy] no response yet, ~{remaining} min left...")
+        if unlimited:
+            print("  [ntfy] no response yet, waiting indefinitely...")
+        else:
+            remaining = int((deadline - time.time()) / 60)
+            print(f"  [ntfy] no response yet, ~{remaining} min left...")
 
     print("  [ntfy] no response within timeout window")
     return "timeout"
