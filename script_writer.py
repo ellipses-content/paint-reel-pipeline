@@ -29,7 +29,7 @@ Generate 8-10 timestamp blocks covering the full 60 seconds."""
 def generate_script(topic: str) -> list[dict]:
     """Returns list of {time: int, text: str} dicts."""
     message = client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-opus-4-8",
         max_tokens=1024,
         system=SYSTEM_PROMPT,
         messages=[

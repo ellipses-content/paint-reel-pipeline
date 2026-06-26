@@ -31,7 +31,7 @@ Return only the image prompt. No explanation. No preamble. Just the prompt text.
 def generate_image_prompt(scene_text: str, topic: str, scene_index: int) -> str:
     """Convert a narration line into an MS Paint style image prompt."""
     message = client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-opus-4-8",
         max_tokens=300,
         system=SYSTEM_PROMPT,
         messages=[
