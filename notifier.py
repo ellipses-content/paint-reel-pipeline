@@ -42,9 +42,37 @@ def _reject_body() -> str:
     return f"{REJECT_MARKER} {APPROVE_TRIGGER_TOKEN}"
 
 
+def _topic_slug(topic: str) -> str:
+    """Mirror the output-dir slug logic used in generate.py."""
+    return topic.lower().replace(" ", "_").replace("(", "").replace(")", "")
+
+
+def _thumbnail_path(topic: str) -> str:
+    """First scene image used as the notification preview thumbnail."""
+    return os.path.join("output", _topic_slug(topic), "images", "scene_00.png")
+
+
+def _actions_header() -> str:
+    """
+    Build the Actions value in ntfy's header (string) format. The JSON action
+    form can't be combined with a binary file body, so we use the header form
+    when attaching the thumbnail.
+    """
+    approve = (
+        f"http, Approve, {_topic_url()}, method=POST, "
+        f"body={_approve_body()}, clear=true"
+    )
+    reject = (
+        f"http, Reject, {_topic_url()}, method=POST, "
+        f"body={_reject_body()}, clear=true"
+    )
+    return "; ".join([approve, reject])
+
+
 def send_approval_request(topic: str) -> int:
     """
-    Send the approval notification with Approve / Reject buttons.
+    Send the approval notification with Approve / Reject buttons and, when
+    available, the first scene image as a preview thumbnail.
     Returns a unix timestamp to use as the polling 'since' anchor.
     """
     if not APPROVE_TRIGGER_TOKEN:
@@ -53,35 +81,28 @@ def send_approval_request(topic: str) -> int:
     # Anchor polling just before publishing so we never miss the response.
     since = int(time.time())
 
-    payload = {
-        "topic": NTFY_TOPIC,
-        "title": f"Cryptid Files: {topic} ready to publish",
-        "message": "Tap Approve to upload to YouTube",
-        "priority": 4,
-        "tags": ["clapper"],
-        "actions": [
-            {
-                "action": "http",
-                "label": "Approve",
-                "url": _topic_url(),
-                "method": "POST",
-                "body": _approve_body(),
-                "clear": True,
-            },
-            {
-                "action": "http",
-                "label": "Reject",
-                "url": _topic_url(),
-                "method": "POST",
-                "body": _reject_body(),
-                "clear": True,
-            },
-        ],
+    # Title/message/actions go in headers so we can send the image as the body.
+    headers = {
+        "Title": f"Cryptid Files: {topic} ready to publish",
+        "Message": "Tap Approve to upload to YouTube",
+        "Priority": "4",
+        "Tags": "clapper",
+        "Actions": _actions_header(),
     }
 
-    resp = requests.post(NTFY_SERVER, json=payload, timeout=30)
+    thumb = _thumbnail_path(topic)
+    if os.path.exists(thumb):
+        headers["Filename"] = "scene_00.png"
+        with open(thumb, "rb") as f:
+            image_data = f.read()
+        resp = requests.put(_topic_url(), data=image_data, headers=headers, timeout=60)
+        print(f"  [ntfy] approval request sent to '{NTFY_TOPIC}' with thumbnail {thumb}")
+    else:
+        # No thumbnail available — send the notification without an attachment.
+        resp = requests.put(_topic_url(), data=b"", headers=headers, timeout=30)
+        print(f"  [ntfy] thumbnail not found at {thumb}; sent without image")
+
     resp.raise_for_status()
-    print(f"  [ntfy] approval request sent to topic '{NTFY_TOPIC}'")
     return since
 
 
