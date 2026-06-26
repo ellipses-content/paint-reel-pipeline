@@ -7,7 +7,7 @@ from script_writer import generate_script
 from image_prompter import generate_all_prompts
 from image_generator import generate_all_images
 from video_assembler import assemble_video
-from uploader import upload_video
+from uploader import upload_unlisted, make_public, delete_video
 from notifier import wait_for_approval
 
 TOPICS_FILE = "topics.txt"
@@ -96,34 +96,35 @@ def run():
         assemble_video(full_script, topic, output_dir)
     print()
 
-    # --- APPROVAL GATE: notify and wait for human decision ---
-    print("[approval] Requesting publish approval via ntfy...")
-    decision = wait_for_approval(topic)
+    # --- STEP 5: Upload unlisted, then gate publication on human approval ---
+    print("[5/5] Uploading to YouTube as unlisted...")
+    video_id = upload_unlisted(final_video, topic)
+    print(f"  Unlisted: https://youtu.be/{video_id}\n")
 
-    if decision == "reject":
-        print("  Rejected. Skipping upload and advancing to next topic.\n")
+    print("[approval] Requesting publish approval via ntfy...")
+    decision = wait_for_approval(topic, video_id)
+
+    if decision == "approve":
+        print("  Approved! Making video public.")
+        make_public(video_id)
+        print(f"  Published: https://youtube.com/shorts/{video_id}\n")
         save_progress(index + 1)
         print(f"Progress saved. Next up: {topics[index+1] if index+1 < len(topics) else 'All done!'}")
         print(f"\n{'='*50}\n")
         return
 
-    if decision == "timeout":
-        print("  No response within 30 minutes. Skipping upload; "
-              "topic stays at current index and will retry next run.\n")
+    if decision == "reject":
+        print("  Rejected. Deleting unlisted video and advancing to next topic.")
+        delete_video(video_id)
+        save_progress(index + 1)
+        print(f"Progress saved. Next up: {topics[index+1] if index+1 < len(topics) else 'All done!'}")
         print(f"\n{'='*50}\n")
         return
 
-    # decision == "approve"
-    print("  Approved! Proceeding to upload.\n")
-
-    # --- STEP 5: Upload to YouTube ---
-    print("[5/5] Uploading to YouTube...")
-    video_id = upload_video(final_video, topic)
-    print(f"  Published: https://youtube.com/shorts/{video_id}\n")
-
-    # --- Advance progress ---
-    save_progress(index + 1)
-    print(f"Progress saved. Next up: {topics[index+1] if index+1 < len(topics) else 'All done!'}")
+    # decision == "timeout"
+    print("  No response within 30 minutes. Deleting unlisted video; "
+          "topic stays at current index and will retry next run.")
+    delete_video(video_id)
     print(f"\n{'='*50}\n")
 
 

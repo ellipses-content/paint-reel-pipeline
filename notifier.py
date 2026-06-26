@@ -69,10 +69,11 @@ def _actions_header() -> str:
     return "; ".join([approve, reject])
 
 
-def send_approval_request(topic: str) -> int:
+def send_approval_request(topic: str, video_id: str = None) -> int:
     """
     Send the approval notification with Approve / Reject buttons and, when
-    available, the first scene image as a preview thumbnail.
+    available, the first scene image as a preview thumbnail. When video_id is
+    given, the unlisted YouTube link is included so it can be watched first.
     Returns a unix timestamp to use as the polling 'since' anchor.
     """
     if not APPROVE_TRIGGER_TOKEN:
@@ -81,10 +82,19 @@ def send_approval_request(topic: str) -> int:
     # Anchor polling just before publishing so we never miss the response.
     since = int(time.time())
 
+    # HTTP header values must stay single-line, so keep the link inline.
+    if video_id:
+        message = (
+            f"Watch: https://youtu.be/{video_id}  —  "
+            f"Approve to publish, Reject to delete"
+        )
+    else:
+        message = "Tap Approve to upload to YouTube"
+
     # Title/message/actions go in headers so we can send the image as the body.
     headers = {
         "Title": f"Cryptid Files: {topic} ready to publish",
-        "Message": "Tap Approve to upload to YouTube",
+        "Message": message,
         "Priority": "4",
         "Tags": "clapper",
         "Actions": _actions_header(),
@@ -135,12 +145,12 @@ def poll_for_response(since: int):
     return decision
 
 
-def wait_for_approval(topic: str) -> str:
+def wait_for_approval(topic: str, video_id: str = None) -> str:
     """
     Send the request and poll until a decision arrives or we time out.
     Returns "approve", "reject", or "timeout".
     """
-    since = send_approval_request(topic)
+    since = send_approval_request(topic, video_id)
     deadline = since + TIMEOUT_SECONDS
 
     while time.time() < deadline:

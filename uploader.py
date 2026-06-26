@@ -98,10 +98,9 @@ def add_to_playlist(youtube, video_id: str, playlist_id: str):
     print(f"  [playlist] added video {video_id} to {playlist_id}")
 
 
-def upload_video(video_path: str, topic: str) -> str:
-    """Upload video to YouTube and add to Cryptid Files playlist. Returns video ID."""
+def upload_unlisted(video_path: str, topic: str) -> str:
+    """Upload the video as UNLISTED for human review. Returns the video ID."""
     youtube = get_youtube_client()
-    playlist_id = get_or_create_playlist(youtube)
 
     title = f"Cryptid Files: {topic} 👁️ #shorts"
     description = (
@@ -131,7 +130,7 @@ def upload_video(video_path: str, topic: str) -> str:
                 "defaultAudioLanguage": "en"
             },
             "status": {
-                "privacyStatus": "public",
+                "privacyStatus": "unlisted",
                 "selfDeclaredMadeForKids": False,
                 "madeForKids": False
             }
@@ -139,7 +138,7 @@ def upload_video(video_path: str, topic: str) -> str:
         media_body=media
     )
 
-    print(f"  [upload] uploading '{title}'...")
+    print(f"  [upload] uploading '{title}' as unlisted...")
     response = None
     while response is None:
         status, response = request.next_chunk()
@@ -147,15 +146,41 @@ def upload_video(video_path: str, topic: str) -> str:
             print(f"  [upload] {int(status.progress() * 100)}%")
 
     video_id = response["id"]
-    print(f"  [upload] done → https://youtube.com/shorts/{video_id}")
-
-    add_to_playlist(youtube, video_id, playlist_id)
+    print(f"  [upload] done (unlisted) → https://youtu.be/{video_id}")
     return video_id
+
+
+def make_public(video_id: str):
+    """Flip an unlisted video to public and add it to the Cryptid Files playlist."""
+    youtube = get_youtube_client()
+
+    youtube.videos().update(
+        part="status",
+        body={
+            "id": video_id,
+            "status": {
+                "privacyStatus": "public",
+                "selfDeclaredMadeForKids": False,
+                "madeForKids": False
+            }
+        }
+    ).execute()
+    print(f"  [publish] video {video_id} set to public → https://youtube.com/shorts/{video_id}")
+
+    playlist_id = get_or_create_playlist(youtube)
+    add_to_playlist(youtube, video_id, playlist_id)
+
+
+def delete_video(video_id: str):
+    """Delete a video entirely (used on reject / timeout)."""
+    youtube = get_youtube_client()
+    youtube.videos().delete(id=video_id).execute()
+    print(f"  [delete] video {video_id} deleted")
 
 
 if __name__ == "__main__":
     import sys
     topic = sys.argv[1] if len(sys.argv) > 1 else "Skinwalker"
     video_path = sys.argv[2] if len(sys.argv) > 2 else f"output/{topic.lower().replace(' ', '_')}/final.mp4"
-    video_id = upload_video(video_path, topic)
-    print(f"Uploaded: {video_id}")
+    video_id = upload_unlisted(video_path, topic)
+    print(f"Uploaded unlisted: {video_id}")
