@@ -34,7 +34,7 @@ jobs:
       - name: Run pipeline
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
           JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
           YOUTUBE_CREDENTIALS_JSON: ${{ secrets.YOUTUBE_CREDENTIALS_JSON }}
         run: python generate.py

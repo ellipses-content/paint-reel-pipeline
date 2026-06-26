@@ -4,66 +4,82 @@ from pathlib import Path
 
 import requests
 
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "")
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN", "")
 
-# Text-to-image model on the Hugging Face Inference API.
-HF_MODEL = os.environ.get("HF_MODEL", "black-forest-labs/FLUX.1-schnell")
-HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+# Text-to-image model on Replicate.
+REPLICATE_MODEL = os.environ.get("REPLICATE_MODEL", "black-forest-labs/flux-schnell")
+REPLICATE_URL = f"https://api.replicate.com/v1/models/{REPLICATE_MODEL}/predictions"
 
-# Negative prompt reinforces the intentionally-amateur MS Paint look.
-NEGATIVE_PROMPT = (
-    "photorealistic, realistic, 3d render, gradient, shading, soft lighting, "
-    "anime, disney, professional, detailed, high quality, polished, complex background"
-)
+MAX_POLLS = 60
+POLL_INTERVAL = 2  # seconds between status checks while a prediction runs
 
-MAX_RETRIES = 6
-RETRY_BACKOFF = 15  # seconds between retries while the model warms up
+
+def _extract_image_url(output) -> str:
+    """flux-schnell returns a list of image URLs; tolerate a bare string too."""
+    if isinstance(output, list):
+        if not output:
+            raise RuntimeError("Replicate returned an empty output list")
+        return output[0]
+    if isinstance(output, str):
+        return output
+    raise RuntimeError(f"Unexpected Replicate output format: {output!r}")
 
 
 def generate_image(prompt: str, output_path: str) -> str:
-    """Render a single prompt to a PNG via the HF Inference API. Returns the path."""
-    if not HF_API_TOKEN:
-        raise ValueError("HF_API_TOKEN not set")
+    """Render a single prompt to a PNG via the Replicate API. Returns the path."""
+    if not REPLICATE_API_TOKEN:
+        raise ValueError("REPLICATE_API_TOKEN not set")
 
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
+        "Content-Type": "application/json",
+        # Ask Replicate to hold the request open until the prediction settles,
+        # so we usually get the result without polling.
+        "Prefer": "wait",
+    }
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "negative_prompt": NEGATIVE_PROMPT,
-            "width": 1024,
-            "height": 576,  # 16:9 widescreen
-        },
+        "input": {
+            "prompt": prompt,
+            "aspect_ratio": "16:9",
+            "output_format": "png",
+            "num_outputs": 1,
+        }
     }
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        r = requests.post(HF_API_URL, headers=headers, json=payload, timeout=120)
+    r = requests.post(REPLICATE_URL, headers=headers, json=payload, timeout=120)
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"Replicate request failed ({r.status_code}): {r.text[:300]}")
 
-        if r.status_code == 200:
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, "wb") as f:
-                f.write(r.content)
-            return output_path
+    prediction = r.json()
 
-        # 503 = model is loading; back off and retry.
-        if r.status_code == 503:
-            wait = RETRY_BACKOFF
-            try:
-                wait = int(r.json().get("estimated_time", RETRY_BACKOFF))
-            except Exception:
-                pass
-            print(f"    [hf] model loading, retry {attempt}/{MAX_RETRIES} in {wait}s...")
-            time.sleep(wait)
-            continue
+    # If "Prefer: wait" did not fully resolve it, poll until it settles.
+    polls = 0
+    while prediction.get("status") not in ("succeeded", "failed", "canceled"):
+        if polls >= MAX_POLLS:
+            raise RuntimeError("Replicate prediction timed out")
+        time.sleep(POLL_INTERVAL)
+        polls += 1
+        get_url = prediction.get("urls", {}).get("get")
+        if not get_url:
+            raise RuntimeError("Replicate response missing polling URL")
+        pr = requests.get(get_url, headers=headers, timeout=60)
+        pr.raise_for_status()
+        prediction = pr.json()
 
-        # 429 = rate limited; back off and retry.
-        if r.status_code == 429:
-            print(f"    [hf] rate limited, retry {attempt}/{MAX_RETRIES} in {RETRY_BACKOFF}s...")
-            time.sleep(RETRY_BACKOFF)
-            continue
+    if prediction.get("status") != "succeeded":
+        raise RuntimeError(
+            f"Replicate prediction {prediction.get('status')}: "
+            f"{prediction.get('error')}"
+        )
 
-        raise RuntimeError(f"HF image request failed ({r.status_code}): {r.text[:200]}")
+    image_url = _extract_image_url(prediction.get("output"))
 
-    raise RuntimeError(f"HF image generation gave up after {MAX_RETRIES} retries")
+    img = requests.get(image_url, timeout=120)
+    img.raise_for_status()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "wb") as f:
+        f.write(img.content)
+    return output_path
 
 
 def generate_all_images(script: list[dict], images_dir: str) -> list[dict]:
