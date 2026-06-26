@@ -20,7 +20,7 @@ import json
 import requests
 
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "reel-pipeline-ethan-1212")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "reelpipelineethan1212")
 APPROVE_TRIGGER_TOKEN = os.environ.get("APPROVE_TRIGGER_TOKEN", "")
 
 POLL_INTERVAL = 30          # seconds between polls
