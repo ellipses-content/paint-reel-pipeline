@@ -8,6 +8,7 @@ from image_prompter import generate_all_prompts
 from image_generator import generate_all_images
 from video_assembler import assemble_video
 from uploader import upload_video
+from notifier import wait_for_approval
 
 TOPICS_FILE = "topics.txt"
 PROGRESS_FILE = "topics_progress.txt"
@@ -94,6 +95,26 @@ def run():
     else:
         assemble_video(full_script, topic, output_dir)
     print()
+
+    # --- APPROVAL GATE: notify and wait for human decision ---
+    print("[approval] Requesting publish approval via ntfy...")
+    decision = wait_for_approval(topic)
+
+    if decision == "reject":
+        print("  Rejected. Skipping upload and advancing to next topic.\n")
+        save_progress(index + 1)
+        print(f"Progress saved. Next up: {topics[index+1] if index+1 < len(topics) else 'All done!'}")
+        print(f"\n{'='*50}\n")
+        return
+
+    if decision == "timeout":
+        print("  No response within 30 minutes. Skipping upload; "
+              "topic stays at current index and will retry next run.\n")
+        print(f"\n{'='*50}\n")
+        return
+
+    # decision == "approve"
+    print("  Approved! Proceeding to upload.\n")
 
     # --- STEP 5: Upload to YouTube ---
     print("[5/5] Uploading to YouTube...")
