@@ -153,6 +153,38 @@ def send_approval_request(topic: str, video_id: str = None) -> int:
     return since
 
 
+def send_failure_notification(topic: str, error) -> None:
+    """
+    Best-effort alert when the pipeline crashes, so a failure is never silent.
+
+    Unlike the approval request, this needs no APPROVE_TRIGGER_TOKEN and carries
+    no action buttons — it just tells you what broke and where. It NEVER raises:
+    a problem sending the alert must not mask the original exception.
+    """
+    try:
+        label = topic or "unknown topic"
+        detail = str(error).replace("\n", " ").strip()
+        if len(detail) > 250:
+            detail = detail[:247] + "..."
+
+        headers = {
+            "Title": f"Cryptid Files: pipeline FAILED on {label}",
+            "Priority": "5",
+            "Tags": "rotating_light",
+        }
+        headers = {key: _ascii_safe(value) for key, value in headers.items()}
+
+        # Message goes in the body (not a header), so it needn't be latin-1 safe.
+        message = f"{label}: {detail}"
+        resp = requests.post(
+            _topic_url(), data=message.encode("utf-8"), headers=headers, timeout=30
+        )
+        resp.raise_for_status()
+        print(f"  [ntfy] failure alert sent to '{NTFY_TOPIC}'")
+    except Exception as exc:  # noqa: BLE001 — never mask the real failure
+        print(f"  [ntfy] could not send failure alert: {exc}")
+
+
 def poll_for_response(since: int):
     """
     Poll the topic for messages since `since`. Returns "approve", "reject",

@@ -8,7 +8,7 @@ from image_prompter import generate_all_prompts
 from image_generator import generate_all_images
 from video_assembler import assemble_video
 from uploader import upload_unlisted, make_public, delete_video
-from notifier import wait_for_approval
+from notifier import wait_for_approval, send_failure_notification
 
 TOPICS_FILE = "topics.txt"
 PROGRESS_FILE = "topics_progress.txt"
@@ -52,57 +52,66 @@ def run():
     print(f"  Topic [{index+1}/{len(topics)}]: {topic}")
     print(f"{'='*50}\n")
 
-    # --- STEP 1: Generate script ---
-    print("[1/5] Writing script...")
-    script_path = Path(output_dir) / "script.json"
-    if script_path.exists():
-        print("  Script already exists, loading...")
-        script = json.loads(script_path.read_text())
-    else:
-        script = generate_script(topic)
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        script_path.write_text(json.dumps(script, indent=2))
-    print(f"  {len(script)} scenes written\n")
+    try:
+        # --- STEP 1: Generate script ---
+        print("[1/5] Writing script...")
+        script_path = Path(output_dir) / "script.json"
+        if script_path.exists():
+            print("  Script already exists, loading...")
+            script = json.loads(script_path.read_text())
+        else:
+            script = generate_script(topic)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            script_path.write_text(json.dumps(script, indent=2))
+        print(f"  {len(script)} scenes written\n")
 
-    # --- STEP 2: Generate image prompts ---
-    print("[2/5] Generating image prompts...")
-    prompts_path = Path(output_dir) / "script_with_prompts.json"
-    if prompts_path.exists():
-        print("  Prompts already exist, loading...")
-        enriched = json.loads(prompts_path.read_text())
-    else:
-        enriched = generate_all_prompts(script, topic)
-        prompts_path.write_text(json.dumps(enriched, indent=2))
-    print()
+        # --- STEP 2: Generate image prompts ---
+        print("[2/5] Generating image prompts...")
+        prompts_path = Path(output_dir) / "script_with_prompts.json"
+        if prompts_path.exists():
+            print("  Prompts already exist, loading...")
+            enriched = json.loads(prompts_path.read_text())
+        else:
+            enriched = generate_all_prompts(script, topic)
+            prompts_path.write_text(json.dumps(enriched, indent=2))
+        print()
 
-    # --- STEP 3: Generate images ---
-    print("[3/5] Generating images (Hugging Face)...")
-    images_dir = str(Path(output_dir) / "images")
-    full_script_path = Path(output_dir) / "script_with_images.json"
-    if full_script_path.exists():
-        print("  Images already exist, loading...")
-        full_script = json.loads(full_script_path.read_text())
-    else:
-        full_script = generate_all_images(enriched, images_dir)
-        full_script_path.write_text(json.dumps(full_script, indent=2))
-    print()
+        # --- STEP 3: Generate images ---
+        print("[3/5] Generating images (Pollinations)...")
+        images_dir = str(Path(output_dir) / "images")
+        full_script_path = Path(output_dir) / "script_with_images.json"
+        if full_script_path.exists():
+            print("  Images already exist, loading...")
+            full_script = json.loads(full_script_path.read_text())
+        else:
+            full_script = generate_all_images(enriched, images_dir)
+            full_script_path.write_text(json.dumps(full_script, indent=2))
+        print()
 
-    # --- STEP 4: Assemble video ---
-    print("[4/5] Assembling video...")
-    final_video = str(Path(output_dir) / "final.mp4")
-    if Path(final_video).exists():
-        print("  Video already assembled, skipping...")
-    else:
-        assemble_video(full_script, topic, output_dir)
-    print()
+        # --- STEP 4: Assemble video ---
+        print("[4/5] Assembling video...")
+        final_video = str(Path(output_dir) / "final.mp4")
+        if Path(final_video).exists():
+            print("  Video already assembled, skipping...")
+        else:
+            assemble_video(full_script, topic, output_dir)
+        print()
 
-    # --- STEP 5: Upload unlisted, then gate publication on human approval ---
-    print("[5/5] Uploading to YouTube as unlisted...")
-    video_id = upload_unlisted(final_video, topic)
-    print(f"  Unlisted: https://youtu.be/{video_id}\n")
+        # --- STEP 5: Upload unlisted, then gate publication on human approval ---
+        print("[5/5] Uploading to YouTube as unlisted...")
+        video_id = upload_unlisted(final_video, topic)
+        print(f"  Unlisted: https://youtu.be/{video_id}\n")
 
-    print("[approval] Requesting publish approval via ntfy...")
-    decision = wait_for_approval(topic, video_id)
+        print("[approval] Requesting publish approval via ntfy...")
+        decision = wait_for_approval(topic, video_id)
+    except Exception as e:
+        # Any crash in the production pipeline would otherwise be silent — the
+        # approval notification only fires at step 5, so a failure before it
+        # leaves you with no signal at all. Alert, then re-raise so the Actions
+        # job still surfaces the failure (red X + full traceback in the logs).
+        print(f"\n[ERROR] Pipeline failed on '{topic}': {e}")
+        send_failure_notification(topic, e)
+        raise
 
     if decision == "approve":
         print("  Approved! Making video public.")
