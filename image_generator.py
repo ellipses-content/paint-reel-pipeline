@@ -34,7 +34,9 @@ STYLE_PREFIX = os.environ.get(
     "badly drawn in Microsoft Paint with a mouse, thick bold black brush "
     "outlines, flat solid bucket-fill colors, no shading no gradient no pencil "
     "texture, crude simple stick figures with round heads and dot eyes, plain "
-    "pure white background, childish amateur clip art doodle, ",
+    "pure white background, childish amateur clip art doodle, but the monster "
+    "looks creepy and scary with a mean angry face, sharp pointy teeth and "
+    "spooky eyes, slightly eerie, not cute, no smiling, ",
 )
 
 MAX_RETRIES = 5

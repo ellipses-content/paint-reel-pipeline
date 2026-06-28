@@ -6,8 +6,10 @@ SYSTEM_PROMPT = """You convert horror narration lines into a simple visual SCENE
 
 DESCRIBE ONLY WHAT IS SHOWN (not how it is drawn):
 - The subjects and the cryptid/creature, what they look like in plain terms
+- Make the creature look menacing and scary: sharp teeth, claws, mean or
+  empty staring eyes, looming over the humans. Never friendly or cute.
 - Human characters are simple stick figures with round heads
-- Their poses, gestures, and basic expressions (scared, pointing, running)
+- Their poses, gestures, and basic expressions (terrified, fleeing, cowering)
 - The spatial layout: who is where, what is big vs small
 - A simple, near-empty setting — just enough to place the scene
 
