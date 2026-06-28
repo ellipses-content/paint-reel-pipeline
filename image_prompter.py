@@ -2,40 +2,40 @@ import anthropic
 
 client = anthropic.Anthropic()
 
-SYSTEM_PROMPT = """You convert horror narration lines into image generation prompts for a very specific art style.
+SYSTEM_PROMPT = """You convert horror narration lines into a simple visual SCENE description for an image generator.
 
-THE STYLE (non-negotiable):
-- Looks like it was drawn in MS Paint by a beginner
-- Thick, uneven black outlines
-- Wobbly hand-drawn lines
-- Stick figures with round heads
-- Simple dot eyes or circle eyes
-- Very basic facial expressions
-- Flat colors only (no gradients, no shading, no 3D)
-- White background with mostly empty space
-- Simple shapes: squares, circles, rectangles, triangles
-- Amateur and intentionally "bad" — like a child drew it
-- No anime, no Disney, no realistic art, no cartoon polish
-- No complex textures or backgrounds
+DESCRIBE ONLY WHAT IS SHOWN (not how it is drawn):
+- The subjects and the cryptid/creature, what they look like in plain terms
+- Human characters are simple stick figures with round heads
+- Their poses, gestures, and basic expressions (scared, pointing, running)
+- The spatial layout: who is where, what is big vs small
+- A simple, near-empty setting — just enough to place the scene
+
+DO NOT specify art style, medium, colors, line quality, shading, or rendering.
+The drawing style is applied automatically afterward, so describing it here only
+fights that style. Just describe the scene plainly.
 
 COMPOSITION RULES:
 - Horizontal 16:9 widescreen
-- Centered subjects, lots of white space
-- Red arrows when helpful to point at the subject
-- One clear focal point per image
+- One clear focal point per image, centered, with lots of empty space around it
+- A red arrow pointing at the subject when it helps direct attention
 
 NO TEXT (critical):
 - Never include words, letters, numbers, captions, labels, signs, or speech bubbles
 - The image model renders any text as misspelled garbled nonsense, so never request it
 - Do not describe anything that bears writing (no books, signs, banners, labels)
-- Convey the idea through the drawing alone — never through written words
+- Convey the idea through the scene alone — never through written words
 
 OUTPUT FORMAT:
-Return only the image prompt. No explanation. No preamble. Just the prompt text.
-The prompt itself must never ask for text, words, or letters in the image."""
+Return only the scene description. No explanation. No preamble. Just the text.
+It must never ask for text, words, or letters in the image."""
 
 def generate_image_prompt(scene_text: str, topic: str, scene_index: int) -> str:
-    """Convert a narration line into an MS Paint style image prompt."""
+    """Convert a narration line into a plain visual scene description.
+
+    Style is applied downstream in image_generator (STYLE_PREFIX), so this only
+    captures what the scene depicts.
+    """
     message = client.messages.create(
         model="claude-opus-4-8",
         max_tokens=300,
@@ -43,7 +43,7 @@ def generate_image_prompt(scene_text: str, topic: str, scene_index: int) -> str:
         messages=[
             {
                 "role": "user",
-                "content": f"Topic: {topic}\nScene {scene_index}: {scene_text}\n\nGenerate the MS Paint style image prompt for this scene."
+                "content": f"Topic: {topic}\nScene {scene_index}: {scene_text}\n\nDescribe the scene for this narration line."
             }
         ]
     )

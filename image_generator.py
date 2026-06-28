@@ -23,6 +23,20 @@ IMAGE_HEIGHT = int(os.environ.get("IMAGE_HEIGHT", "720"))
 # An optional Pollinations token (raises rate limits) — works fine without one.
 POLLINATIONS_TOKEN = os.environ.get("POLLINATIONS_TOKEN", "")
 
+# Style lock. Pollinations dropped the old FLUX checkpoints and now serves only
+# "sana" (the "flux" model name is just an alias for it). Sana has a strong
+# painterly bias and ignores style hints buried inside a long scene prompt, so
+# the crude childlike look has to be forced up front, on every request. This
+# prefix is prepended to the scene description the prompter produces; keeping it
+# here (not in the LLM prompt) guarantees it's always applied and never drifts.
+STYLE_PREFIX = os.environ.get(
+    "IMAGE_STYLE_PREFIX",
+    "badly drawn in Microsoft Paint with a mouse, thick bold black brush "
+    "outlines, flat solid bucket-fill colors, no shading no gradient no pencil "
+    "texture, crude simple stick figures with round heads and dot eyes, plain "
+    "pure white background, childish amateur clip art doodle, ",
+)
+
 MAX_RETRIES = 5
 RETRY_BACKOFF = 8  # seconds, multiplied by attempt number
 REQUEST_TIMEOUT = 180  # image generation can be slow under load
@@ -40,7 +54,8 @@ def generate_image(prompt: str, output_path: str) -> str:
     Retries on transient failures (timeouts, 5xx, rate limits, non-image
     responses) with linear backoff. Raises only if every attempt fails.
     """
-    url = f"{POLLINATIONS_BASE}/{quote(prompt)}"
+    styled_prompt = f"{STYLE_PREFIX}{prompt}"
+    url = f"{POLLINATIONS_BASE}/{quote(styled_prompt)}"
     params = {
         "width": IMAGE_WIDTH,
         "height": IMAGE_HEIGHT,
