@@ -21,12 +21,18 @@ THE STYLE (non-negotiable):
 COMPOSITION RULES:
 - Horizontal 16:9 widescreen
 - Centered subjects, lots of white space
-- Red arrows or question marks when helpful
-- If text appears, it must be short, handwritten-looking, and easy to read
+- Red arrows when helpful to point at the subject
 - One clear focal point per image
 
+NO TEXT (critical):
+- Never include words, letters, numbers, captions, labels, signs, or speech bubbles
+- The image model renders any text as misspelled garbled nonsense, so never request it
+- Do not describe anything that bears writing (no books, signs, banners, labels)
+- Convey the idea through the drawing alone — never through written words
+
 OUTPUT FORMAT:
-Return only the image prompt. No explanation. No preamble. Just the prompt text."""
+Return only the image prompt. No explanation. No preamble. Just the prompt text.
+The prompt itself must never ask for text, words, or letters in the image."""
 
 def generate_image_prompt(scene_text: str, topic: str, scene_index: int) -> str:
     """Convert a narration line into an MS Paint style image prompt."""

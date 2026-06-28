@@ -11,7 +11,10 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Must exceed notifier.py's 5.5h approval window so the job isn't hard-killed
+    # mid-wait — that would skip the graceful "advance to next topic on timeout"
+    # branch and leave the counter stuck. 6h gives headroom for generation too.
+    timeout-minutes: 360
 
     permissions:
       contents: write
