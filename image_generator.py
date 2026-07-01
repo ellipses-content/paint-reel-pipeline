@@ -26,17 +26,20 @@ POLLINATIONS_TOKEN = os.environ.get("POLLINATIONS_TOKEN", "")
 # Style lock. Pollinations dropped the old FLUX checkpoints and now serves only
 # "sana" (the "flux" model name is just an alias for it). Sana has a strong
 # painterly bias and ignores style hints buried inside a long scene prompt, so
-# the crude childlike look has to be forced up front, on every request. This
-# prefix is prepended to the scene description the prompter produces; keeping it
-# here (not in the LLM prompt) guarantees it's always applied and never drifts.
+# the look has to be forced up front, on every request. This prefix is prepended
+# to the scene description the prompter produces; keeping it here (not in the LLM
+# prompt) guarantees it's always applied and never drifts.
+#
+# Flat, clean MS-Paint look (not the sketchy/painterly default). The menace lives
+# in the per-topic creature description from image_prompter, not here, so the
+# style words can stay purely about line/fill. Flat + simple also helps the
+# creature read as the SAME character across panels (less detail to diverge).
 STYLE_PREFIX = os.environ.get(
     "IMAGE_STYLE_PREFIX",
-    "badly drawn in Microsoft Paint with a mouse, thick bold black brush "
-    "outlines, flat solid bucket-fill colors, no shading no gradient no pencil "
-    "texture, crude simple stick figures with round heads and dot eyes, plain "
-    "pure white background, childish amateur clip art doodle, but the monster "
-    "looks creepy and scary with a mean angry face, sharp pointy teeth and "
-    "spooky eyes, slightly eerie, not cute, no smiling, ",
+    "flat simple MS Paint drawing, clean bold even black outline, flat solid "
+    "fill colors, no shading, no gradient, no texture, no sketchy lines, "
+    "minimal cartoon clip art, simple stick figures with round heads and dot "
+    "eyes, plain pure white background, ",
 )
 
 MAX_RETRIES = 5
@@ -50,8 +53,11 @@ def _seed_for(prompt: str) -> int:
     return int(digest, 16) % 1_000_000
 
 
-def generate_image(prompt: str, output_path: str) -> str:
+def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
     """Render a single prompt to a PNG via Pollinations. Returns the path.
+
+    `seed` pins the generation; pass a shared per-topic seed so every panel of a
+    video looks like the same creature. Falls back to a per-prompt seed.
 
     Retries on transient failures (timeouts, 5xx, rate limits, non-image
     responses) with linear backoff. Raises only if every attempt fails.
@@ -62,7 +68,7 @@ def generate_image(prompt: str, output_path: str) -> str:
         "width": IMAGE_WIDTH,
         "height": IMAGE_HEIGHT,
         "model": IMAGE_MODEL,
-        "seed": _seed_for(prompt),
+        "seed": seed if seed is not None else _seed_for(prompt),
         "nologo": "true",
     }
     if POLLINATIONS_TOKEN:
@@ -100,15 +106,23 @@ def generate_image(prompt: str, output_path: str) -> str:
 
 
 def generate_all_images(script: list[dict], images_dir: str) -> list[dict]:
-    """Render every scene's image_prompt and attach image_path to each block."""
+    """Render every scene's image_prompt and attach image_path to each block.
+
+    All panels of a topic share one seed (derived from the canonical creature
+    description) so the creature reads as the same character throughout.
+    """
     Path(images_dir).mkdir(parents=True, exist_ok=True)
+
+    designs = {b.get("creature_design") for b in script if b.get("creature_design")}
+    shared_seed = _seed_for(next(iter(designs))) if len(designs) == 1 else None
+
     result = []
     for i, block in enumerate(script):
         image_path = str(Path(images_dir) / f"scene_{i:02d}.png")
         if Path(image_path).exists():
             print(f"  [image {i+1}/{len(script)}] exists, skipping")
         else:
-            generate_image(block["image_prompt"], image_path)
+            generate_image(block["image_prompt"], image_path, seed=shared_seed)
             print(f"  [image {i+1}/{len(script)}] generated → {image_path}")
         result.append({**block, "image_path": image_path})
     return result

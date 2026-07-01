@@ -2,64 +2,90 @@ import anthropic
 
 client = anthropic.Anthropic()
 
-SYSTEM_PROMPT = """You convert horror narration lines into a simple visual SCENE description for an image generator.
+# Designed once per topic: a fixed visual definition of the cryptid so it can be
+# drawn the SAME in every panel. Consistency across panels was the big win of the
+# old flat style; injecting one canonical description into every scene prompt
+# (plus a shared seed in image_generator) recreates it.
+CREATURE_SYSTEM = """You design ONE fixed visual look for a cryptid that will be drawn identically in every panel of a short video.
 
-DESCRIBE ONLY WHAT IS SHOWN (not how it is drawn):
-- The subjects and the cryptid/creature, what they look like in plain terms
-- Make the creature look menacing and scary: sharp teeth, claws, mean or
-  empty staring eyes, looming over the humans. Never friendly or cute.
-- Human characters are simple stick figures with round heads
-- Their poses, gestures, and basic expressions (terrified, fleeing, cowering)
-- The spatial layout: who is where, what is big vs small
-- A simple, near-empty setting — just enough to place the scene
+Output a single short description (one sentence, ~25 words) of how the creature LOOKS, and nothing else. It must:
+- Be concrete and specific enough to redraw identically: body shape, main color, head/face, eyes, teeth or claws, and 1-2 distinctive features.
+- Make the creature menacing and scary — never cute or friendly.
+- Describe ONLY the creature itself: no scene, no background, no people, no art style.
+- Never mention text, words, or letters.
 
-DO NOT specify art style, medium, colors, line quality, shading, or rendering.
-The drawing style is applied automatically afterward, so describing it here only
-fights that style. Just describe the scene plainly.
+Return only the description, no preamble."""
 
-COMPOSITION RULES:
-- Horizontal 16:9 widescreen
-- One clear focal point per image, centered, with lots of empty space around it
-- A red arrow pointing at the subject when it helps direct attention
+# Per-panel: describe only what HAPPENS. The creature's appearance is fixed and
+# supplied separately, so Claude must not redescribe it (that would let it drift).
+SCENE_SYSTEM = """You turn a horror narration line into a simple SCENE description for ONE panel of a cryptid video.
 
-NO TEXT (critical):
-- Never include words, letters, numbers, captions, labels, signs, or speech bubbles
-- The image model renders any text as misspelled garbled nonsense, so never request it
-- Do not describe anything that bears writing (no books, signs, banners, labels)
-- Convey the idea through the scene alone — never through written words
+The creature's appearance is ALREADY decided and given to you. Do NOT redescribe what the creature looks like. Describe only what is HAPPENING in this panel:
+- What the creature is doing — its pose, action, and where it is
+- Human characters are simple stick figures with round heads; give their poses and expressions (terrified, fleeing, cowering)
+- The layout: who is where, what is big vs small, one clear focal point with lots of empty space
+- A red arrow pointing at the creature when it helps direct attention
 
-OUTPUT FORMAT:
-Return only the scene description. No explanation. No preamble. Just the text.
-It must never ask for text, words, or letters in the image."""
+DO NOT specify art style, colors, line quality, or rendering — that is applied separately.
 
-def generate_image_prompt(scene_text: str, topic: str, scene_index: int) -> str:
-    """Convert a narration line into a plain visual scene description.
+NO TEXT (critical): never request words, letters, numbers, captions, labels, signs, or speech bubbles. Do not describe anything bearing writing. Convey everything through the scene alone.
 
-    Style is applied downstream in image_generator (STYLE_PREFIX), so this only
-    captures what the scene depicts.
-    """
+OUTPUT: return only the scene action description. No preamble."""
+
+
+def generate_creature_design(topic: str) -> str:
+    """One canonical, reusable visual description of the cryptid for `topic`."""
     message = client.messages.create(
         model="claude-opus-4-8",
-        max_tokens=300,
-        system=SYSTEM_PROMPT,
+        max_tokens=120,
+        system=CREATURE_SYSTEM,
         messages=[
-            {
-                "role": "user",
-                "content": f"Topic: {topic}\nScene {scene_index}: {scene_text}\n\nDescribe the scene for this narration line."
-            }
-        ]
+            {"role": "user",
+             "content": f"Cryptid: {topic}\n\nDescribe how this creature looks."}
+        ],
     )
     return message.content[0].text.strip()
 
 
+def generate_image_prompt(scene_text: str, topic: str, scene_index: int,
+                          creature_design: str) -> str:
+    """Build one panel's image prompt: the fixed creature look + the scene action.
+
+    Art style is applied downstream in image_generator (STYLE_PREFIX); the
+    creature look is fixed here so every panel draws the same monster.
+    """
+    message = client.messages.create(
+        model="claude-opus-4-8",
+        max_tokens=300,
+        system=SCENE_SYSTEM,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Topic: {topic}\n"
+                    f"The creature (fixed look — do NOT redescribe it): {creature_design}\n"
+                    f"Scene {scene_index} narration: {scene_text}\n\n"
+                    f"Describe what happens in this panel."
+                ),
+            }
+        ],
+    )
+    action = message.content[0].text.strip()
+    return f"{creature_design}. Scene: {action}"
+
+
 def generate_all_prompts(script: list[dict], topic: str) -> list[dict]:
-    """Add image_prompt to each script block."""
+    """Add image_prompt (and the shared creature_design) to each script block."""
+    creature_design = generate_creature_design(topic)
+    print(f"  [creature] {creature_design}")
+
     result = []
     for i, block in enumerate(script):
-        prompt = generate_image_prompt(block["text"], topic, i)
+        prompt = generate_image_prompt(block["text"], topic, i, creature_design)
         result.append({
             **block,
-            "image_prompt": prompt
+            "image_prompt": prompt,
+            "creature_design": creature_design,
         })
         print(f"  [prompt {i+1}/{len(script)}] generated")
     return result
