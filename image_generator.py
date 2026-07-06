@@ -214,9 +214,19 @@ def _pick_matching_scene(candidate_paths: list[str], reference_path: str,
     return _vision_pick(content, len(candidate_paths))
 
 
+# Small pause between image requests so a burst of ~SCENE_CANDIDATES x scenes
+# doesn't trip Pollinations rate limiting (which was making whole scenes fail).
+SCENE_REQUEST_PAUSE = float(os.environ.get("SCENE_REQUEST_PAUSE", "2"))
+
+
 def generate_scene(scene_prompt: str, reference_path: str, creature_design: str,
                    out_path: str, index: int) -> tuple:
-    """Generate several candidates for one scene; keep the cleanest match."""
+    """Generate several candidates for one scene; keep the cleanest match.
+
+    If every candidate fails (e.g. Pollinations is down/rate-limiting), fall back
+    to the vetted reference creature so ONE bad scene never kills the whole reel —
+    the human approval gate can still catch a weak frame.
+    """
     base_seed = _seed_for(scene_prompt)
     candidates = []
     for k in range(max(1, SCENE_CANDIDATES)):
@@ -226,8 +236,13 @@ def generate_scene(scene_prompt: str, reference_path: str, creature_design: str,
             candidates.append(cand)
         except Exception as e:  # noqa: BLE001
             print(f"    [scene {index}] candidate {k} failed: {e}")
+        time.sleep(SCENE_REQUEST_PAUSE)
+
     if not candidates:
-        raise RuntimeError(f"all candidates failed for scene {index}")
+        print(f"    [scene {index}] all candidates failed; using reference creature")
+        Image.open(reference_path).convert("RGB").save(out_path, "PNG")
+        return -1, 0
+
     best = _pick_matching_scene(candidates, reference_path, creature_design)
     Image.open(candidates[best]).convert("RGB").save(out_path, "PNG")
     return best, len(candidates)
@@ -260,7 +275,8 @@ def generate_all_images(script: list[dict], images_dir: str) -> list[dict]:
         else:
             scene_prompt = block.get("image_prompt") or creature_design
             best, n = generate_scene(scene_prompt, reference_path, creature_design, image_path, i)
-            print(f"  [image {i+1}/{len(script)}] chose candidate {best} of {n} → {image_path}")
+            picked = f"chose candidate {best} of {n}" if n else "fell back to reference"
+            print(f"  [image {i+1}/{len(script)}] {picked} → {image_path}")
         result.append({**block, "image_path": image_path})
     return result
 
