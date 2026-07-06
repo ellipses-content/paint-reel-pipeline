@@ -5,8 +5,10 @@ import math
 import time
 import base64
 import hashlib
+import threading
 from pathlib import Path
 from urllib.parse import quote
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from PIL import Image, ImageChops, ImageDraw
@@ -49,6 +51,14 @@ MAX_RETRIES = 5
 RETRY_BACKOFF = 8  # seconds, multiplied by attempt number
 REQUEST_TIMEOUT = 180  # image generation can be slow under load
 
+# Concurrency. Image requests run in parallel (per-candidate and per-scene), but
+# a global semaphore caps how many actually hit Pollinations at once — that cap
+# IS the rate-limit control (replacing the old fixed inter-request pause). The
+# retry/backoff in generate_image stays as the safety net. A Pollinations token
+# (POLLINATIONS_TOKEN) further raises limits if set.
+IMAGE_MAX_WORKERS = max(1, int(os.environ.get("IMAGE_MAX_WORKERS", "2")))
+_REQUEST_SEM = threading.BoundedSemaphore(IMAGE_MAX_WORKERS)
+
 
 def _seed_for(prompt: str) -> int:
     """Deterministic seed from the prompt so reruns reproduce the same image."""
@@ -80,26 +90,36 @@ def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
+            # Hold a global slot only for the actual network+decode, so backoff
+            # sleeps don't occupy concurrency and the cap throttles live requests.
+            with _REQUEST_SEM:
+                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp.raise_for_status()
 
-            content_type = resp.headers.get("Content-Type", "")
-            if not content_type.startswith("image/"):
-                raise ValueError(
-                    f"expected an image, got '{content_type or 'unknown'}' "
-                    f"({len(resp.content)} bytes)"
-                )
+                content_type = resp.headers.get("Content-Type", "")
+                if not content_type.startswith("image/"):
+                    raise ValueError(
+                        f"expected an image, got '{content_type or 'unknown'}' "
+                        f"({len(resp.content)} bytes)"
+                    )
 
-            # Re-encode through Pillow to guarantee a valid PNG at the path
-            # (Pollinations may hand back JPEG) and verify it isn't corrupt.
-            image = Image.open(io.BytesIO(resp.content)).convert("RGB")
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            image.save(output_path, format="PNG")
-            return output_path
+                # Re-encode through Pillow to guarantee a valid PNG at the path
+                # (Pollinations may hand back JPEG) and verify it isn't corrupt.
+                image = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                image.save(output_path, format="PNG")
+                return output_path
         except Exception as e:  # noqa: BLE001 — retry on anything transient
             last_err = e
             if attempt < MAX_RETRIES:
                 wait = RETRY_BACKOFF * attempt
+                # On rate limiting, honor the server's Retry-After if present,
+                # else back off harder — concurrency makes 429s more likely.
+                resp_obj = getattr(e, "response", None)
+                if resp_obj is not None and resp_obj.status_code == 429:
+                    retry_after = (resp_obj.headers.get("Retry-After") or "").strip()
+                    wait = (int(retry_after) if retry_after.isdigit()
+                            else RETRY_BACKOFF * (2 ** attempt))
                 print(f"    [retry {attempt}/{MAX_RETRIES - 1}] {e}; waiting {wait}s...")
                 time.sleep(wait)
 
@@ -118,7 +138,30 @@ def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
 # but it removes most of the slop; the human approval gate catches the rest.
 
 SPRITE_CANDIDATES = int(os.environ.get("SPRITE_CANDIDATES", "3"))
-SCENE_CANDIDATES = int(os.environ.get("SCENE_CANDIDATES", "3"))
+SCENE_CANDIDATES = int(os.environ.get("SCENE_CANDIDATES", "2"))
+
+
+def _generate_candidates(prompt: str, base_seed: int, seed_step: int, n: int,
+                         out_dir: Path, prefix: str) -> list[str]:
+    """Generate `n` candidates of one prompt concurrently (varied seed per k).
+
+    Returns the paths that generated successfully, in candidate order. The global
+    request semaphore bounds how many actually run at once, so this is safe to
+    nest inside the per-scene pool.
+    """
+    paths = [str(out_dir / f"{prefix}_{k}.png") for k in range(n)]
+
+    def _one(k: int):
+        try:
+            generate_image(prompt, paths[k], seed=base_seed + k * seed_step)
+            return k
+        except Exception as e:  # noqa: BLE001
+            print(f"    [gen] candidate {k} failed: {e}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=max(1, n)) as pool:
+        done = list(pool.map(_one, range(n)))
+    return [paths[k] for k in range(n) if done[k] is not None]
 
 
 def _img_block(path: str) -> dict:
@@ -175,14 +218,10 @@ def generate_creature_sprite(creature_design: str, out_path: str) -> str:
         "exactly one head, correct number of limbs, no extra limbs, no duplicated "
         "body parts, nothing else in the image"
     )
-    candidates = []
-    for k in range(max(1, SPRITE_CANDIDATES)):
-        cand = str(Path(out_path).parent / f"_creature_cand_{k}.png")
-        try:
-            generate_image(prompt, cand, seed=base_seed + k * 7919)
-            candidates.append(cand)
-        except Exception as e:  # noqa: BLE001
-            print(f"  [sprite] candidate {k} failed: {e}")
+    candidates = _generate_candidates(
+        prompt, base_seed, 7919, max(1, SPRITE_CANDIDATES),
+        Path(out_path).parent, "_creature_cand",
+    )
     if not candidates:
         raise RuntimeError("all creature sprite candidates failed")
 
@@ -214,29 +253,20 @@ def _pick_matching_scene(candidate_paths: list[str], reference_path: str,
     return _vision_pick(content, len(candidate_paths))
 
 
-# Small pause between image requests so a burst of ~SCENE_CANDIDATES x scenes
-# doesn't trip Pollinations rate limiting (which was making whole scenes fail).
-SCENE_REQUEST_PAUSE = float(os.environ.get("SCENE_REQUEST_PAUSE", "2"))
-
-
 def generate_scene(scene_prompt: str, reference_path: str, creature_design: str,
                    out_path: str, index: int) -> tuple:
     """Generate several candidates for one scene; keep the cleanest match.
 
+    Candidates are generated concurrently (throttled by the global request cap).
     If every candidate fails (e.g. Pollinations is down/rate-limiting), fall back
     to the vetted reference creature so ONE bad scene never kills the whole reel —
     the human approval gate can still catch a weak frame.
     """
     base_seed = _seed_for(scene_prompt)
-    candidates = []
-    for k in range(max(1, SCENE_CANDIDATES)):
-        cand = str(Path(out_path).parent / f"_scene{index:02d}_cand_{k}.png")
-        try:
-            generate_image(scene_prompt, cand, seed=base_seed + k * 6301)
-            candidates.append(cand)
-        except Exception as e:  # noqa: BLE001
-            print(f"    [scene {index}] candidate {k} failed: {e}")
-        time.sleep(SCENE_REQUEST_PAUSE)
+    candidates = _generate_candidates(
+        scene_prompt, base_seed, 6301, max(1, SCENE_CANDIDATES),
+        Path(out_path).parent, f"_scene{index:02d}_cand",
+    )
 
     if not candidates:
         print(f"    [scene {index}] all candidates failed; using reference creature")
@@ -252,9 +282,11 @@ def generate_all_images(script: list[dict], images_dir: str) -> list[dict]:
     """Draw a reference creature, then generate each scene as its own drawing,
     keeping the candidate that best matches the reference with clean anatomy.
 
-    Different poses per scene (story-matching); the reference + vision filter keep
-    the creature on-model and cut out most deformed frames. Free tools can't make
-    this perfect, so the human approval gate is the final backstop.
+    Scenes are generated concurrently (bounded by IMAGE_MAX_WORKERS); each scene
+    also fans its candidates out in parallel. The global request semaphore caps
+    total live Pollinations requests. Different poses per scene (story-matching);
+    the reference + vision filter keep the creature on-model and cut most deformed
+    frames. Free tools can't make this perfect, so the approval gate is the backstop.
     """
     Path(images_dir).mkdir(parents=True, exist_ok=True)
 
@@ -263,22 +295,34 @@ def generate_all_images(script: list[dict], images_dir: str) -> list[dict]:
     if not creature_design:
         raise ValueError("creature_design missing/inconsistent; run image_prompter first")
 
+    # The reference must exist before scenes (they're vision-matched against it),
+    # so generate it first, then fan the scenes out.
     reference_path = str(Path(images_dir) / "creature.png")
     if not Path(reference_path).exists():
         generate_creature_sprite(creature_design, reference_path)
 
-    result = []
-    for i, block in enumerate(script):
+    def _one_scene(i: int):
         image_path = str(Path(images_dir) / f"scene_{i:02d}.png")
         if Path(image_path).exists():
             print(f"  [image {i+1}/{len(script)}] exists, skipping")
-        else:
-            scene_prompt = block.get("image_prompt") or creature_design
+            return
+        scene_prompt = script[i].get("image_prompt") or creature_design
+        try:
             best, n = generate_scene(scene_prompt, reference_path, creature_design, image_path, i)
             picked = f"chose candidate {best} of {n}" if n else "fell back to reference"
-            print(f"  [image {i+1}/{len(script)}] {picked} → {image_path}")
-        result.append({**block, "image_path": image_path})
-    return result
+        except Exception as e:  # noqa: BLE001 — one scene must never kill the reel
+            print(f"  [image {i+1}/{len(script)}] error ({e}); falling back to reference")
+            Image.open(reference_path).convert("RGB").save(image_path, "PNG")
+            picked = "fell back to reference (error)"
+        print(f"  [image {i+1}/{len(script)}] {picked} → {image_path}")
+
+    with ThreadPoolExecutor(max_workers=IMAGE_MAX_WORKERS) as pool:
+        list(pool.map(_one_scene, range(len(script))))
+
+    return [
+        {**block, "image_path": str(Path(images_dir) / f"scene_{i:02d}.png")}
+        for i, block in enumerate(script)
+    ]
 
 
 if __name__ == "__main__":
