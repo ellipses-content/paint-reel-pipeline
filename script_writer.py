@@ -32,7 +32,7 @@ def generate_script(topic: str) -> list[dict]:
     raw = generate_text(
         SYSTEM_PROMPT,
         f"Write a Cryptid Files script about: {topic}",
-        max_tokens=1024,
+        max_tokens=1500,
         temperature=0.9,
     )
 

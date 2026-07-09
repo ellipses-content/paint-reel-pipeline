@@ -18,13 +18,19 @@ TEXT_ENDPOINT = os.environ.get(
 TEXT_MODEL = os.environ.get("POLLINATIONS_TEXT_MODEL", "openai")
 POLLINATIONS_TOKEN = os.environ.get("POLLINATIONS_TOKEN", "")
 
+# The only free model (GPT-OSS 20B) is a *reasoning* model: at default effort it
+# spends the whole token budget "thinking" and returns an empty `content`
+# (finish_reason=length). Forcing low reasoning effort makes it emit the answer.
+REASONING_EFFORT = os.environ.get("POLLINATIONS_REASONING", "low")
+
 TEXT_MAX_RETRIES = 4
 TEXT_BACKOFF = 5       # seconds, multiplied by attempt number
 TEXT_TIMEOUT = 120
 
 
 def _post(messages: list, max_tokens: int = None, temperature: float = 0.9) -> str:
-    payload = {"model": TEXT_MODEL, "messages": messages}
+    payload = {"model": TEXT_MODEL, "messages": messages,
+               "reasoning_effort": REASONING_EFFORT}
     if max_tokens:
         payload["max_tokens"] = max_tokens
     if temperature is not None:
@@ -39,10 +45,14 @@ def _post(messages: list, max_tokens: int = None, temperature: float = 0.9) -> s
             resp = requests.post(TEXT_ENDPOINT, json=payload, headers=headers,
                                  timeout=TEXT_TIMEOUT)
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
-            if not content or not content.strip():
-                raise ValueError("empty text response")
-            return content.strip()
+            data = resp.json()
+            choices = data.get("choices") or []
+            message = (choices[0].get("message") if choices else {}) or {}
+            content = (message.get("content") or "").strip()
+            if not content:
+                finish = choices[0].get("finish_reason") if choices else "none"
+                raise ValueError(f"empty content (finish_reason={finish})")
+            return content
         except Exception as e:  # noqa: BLE001 — retry on anything transient
             last_err = e
             if attempt < TEXT_MAX_RETRIES:

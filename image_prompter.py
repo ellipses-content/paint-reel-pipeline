@@ -20,7 +20,7 @@ def generate_creature_design(topic: str) -> str:
     return generate_text(
         CREATURE_SYSTEM,
         f"Cryptid: {topic}\n\nDescribe how this creature looks.",
-        max_tokens=120,
+        max_tokens=400,
         temperature=0.7,
     )
 
