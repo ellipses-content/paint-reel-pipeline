@@ -31,8 +31,12 @@ STYLE_PREFIX = os.environ.get(
     "minimal cartoon clip art, plain pure white background, ",
 )
 
-MAX_RETRIES = 5
-RETRY_BACKOFF = 8  # seconds, multiplied by attempt number
+# The whole video now hinges on ONE image (the reused sprite), and Pollinations'
+# free image API flaps (intermittent 530s under load). Retry hard so a run rides
+# out a rough patch instead of dying. Tunable via env.
+MAX_RETRIES = int(os.environ.get("IMAGE_MAX_RETRIES", "10"))
+RETRY_BACKOFF = 8   # seconds * attempt, capped below
+RETRY_BACKOFF_CAP = 30
 REQUEST_TIMEOUT = 180  # image generation can be slow under load
 
 
@@ -80,7 +84,7 @@ def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
         except Exception as e:  # noqa: BLE001 — retry on anything transient
             last_err = e
             if attempt < MAX_RETRIES:
-                wait = RETRY_BACKOFF * attempt
+                wait = min(RETRY_BACKOFF * attempt, RETRY_BACKOFF_CAP)
                 print(f"    [retry {attempt}/{MAX_RETRIES - 1}] {e}; waiting {wait}s...")
                 time.sleep(wait)
 
@@ -111,7 +115,7 @@ _LAYOUTS = [
 def generate_creature_sprite(creature_design: str, out_path: str) -> str:
     """Draw the cryptid ONCE, isolated on white, as the sprite reused everywhere."""
     prompt = (
-        f"{creature_design}. Full body side view, the whole creature centered and "
+        f"{creature_design.rstrip('. ')}. Full body side view, the whole creature centered and "
         "isolated on a plain pure white background. Exactly ONE head, correct "
         "number of limbs, no extra legs, no extra arms, no extra eyes, no extra "
         "horns, no extra tails, no duplicated body parts. Simple clean shapes, "
