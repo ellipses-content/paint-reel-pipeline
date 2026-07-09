@@ -1,44 +1,42 @@
-import anthropic
 import re
 
-client = anthropic.Anthropic()
+from text_client import generate_text
 
-SYSTEM_PROMPT = """You are a master horror storyteller writing scripts for a YouTube Shorts series called "Cryptid Files."
-Your scripts are cinematic, atmospheric, and deeply unsettling. You write for a faceless narration channel.
+SYSTEM_PROMPT = """You write short horror narration scripts for a YouTube Shorts series called "Cryptid Files" about a given cryptid.
 
-Script rules:
-- Exactly 60 seconds when read aloud at a moderate pace (~130 words)
-- Format: each line starts with a timestamp in seconds, followed by a pipe, followed on a new line with the narration
-- Structure: Hook (0s) → Historical context (10s) → Escalation (30s) → Unsettling close (50s)
-- Tone: slow-burn dread, not cheesy. Think true crime meets folklore
-- Never say "subscribe" or "like"
-- End on an open, haunting note — no resolution
+Write about 120-140 words of narration total, split into 8 to 10 short beats.
+Tone: slow-burn dread, eerie, true-crime-meets-folklore. Never say "subscribe" or "like". End on an unresolved, haunting note.
 
-Timestamp format (strict):
+FORMAT — output ONLY the beats, exactly like this, nothing else:
+- Each beat is a timestamp in square brackets on its own line (seconds, starting at 0, increasing, ending near 58),
+- then the narration sentence on the very next line,
+- then one blank line.
+
+Do NOT include any titles, notes, explanations, reasoning, or the word "narration" — output only real narration sentences about the cryptid.
+
+Example of the shape (write your OWN sentences about the cryptid, do not copy these):
+
 [0]
-Narration line here.
+In the swamps of Louisiana, something has been watching the treeline for a hundred years.
 
-[7]
-Next narration line here.
+[8]
+The first hunters who saw it never spoke of it again.
 
-[12]
-Continue the story.
+[16]
+They said it stood upright, taller than any man.
 
-Generate 8-10 timestamp blocks covering the full 60 seconds."""
+Now write the script for the cryptid the user names."""
 
 def generate_script(topic: str) -> list[dict]:
     """Returns list of {time: int, text: str} dicts."""
-    message = client.messages.create(
-        model="claude-opus-4-8",
+    raw = generate_text(
+        SYSTEM_PROMPT,
+        f"Write a Cryptid Files script about: {topic}",
         max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[
-            {"role": "user", "content": f"Write a Cryptid Files script about: {topic}"}
-        ]
+        temperature=0.9,
     )
 
-    raw = message.content[0].text
-    blocks = re.findall(r'\[(\d+)\]\n(.*?)(?=\n\[|\Z)', raw, re.DOTALL)
+    blocks = re.findall(r'\[(\d+)\]\s*\n(.*?)(?=\n\s*\[|\Z)', raw, re.DOTALL)
 
     result = []
     for time_str, text in blocks:
