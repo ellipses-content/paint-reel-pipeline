@@ -31,10 +31,10 @@ STYLE_PREFIX = os.environ.get(
     "minimal cartoon clip art, plain pure white background, ",
 )
 
-# The whole video now hinges on ONE image (the reused sprite), and Pollinations'
-# free image API flaps (intermittent 530s under load). Retry hard so a run rides
-# out a rough patch instead of dying. Tunable via env.
-MAX_RETRIES = int(os.environ.get("IMAGE_MAX_RETRIES", "10"))
+# Pollinations' free image API flaps (intermittent 530s). Retry a few times to
+# ride out a brief blip, then fail over to the AI Horde fallback rather than
+# grinding for minutes when it's fully down. Tunable via env.
+MAX_RETRIES = int(os.environ.get("IMAGE_MAX_RETRIES", "4"))
 RETRY_BACKOFF = 8   # seconds * attempt, capped below
 RETRY_BACKOFF_CAP = 30
 REQUEST_TIMEOUT = 180  # image generation can be slow under load
@@ -46,11 +46,22 @@ def _seed_for(prompt: str) -> int:
     return int(digest, 16) % 1_000_000
 
 
-def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
+# AI Horde — free, no-key (anonymous), volunteer GPU network. Used as a fallback
+# when Pollinations' image API is down, so an outage never kills the whole run.
+# Slower (anonymous = low priority) but we only need one image per video.
+AIHORDE_API = os.environ.get("AIHORDE_API", "https://aihorde.net/api/v2").rstrip("/")
+AIHORDE_KEY = os.environ.get("AIHORDE_API_KEY", "0000000000")  # anonymous
+AIHORDE_MODELS = os.environ.get("AIHORDE_MODELS", "")  # optional csv; blank = any worker
+AIHORDE_TIMEOUT = int(os.environ.get("AIHORDE_TIMEOUT", "600"))
+AIHORDE_POLL = 8
+AIHORDE_W, AIHORDE_H = 1024, 576  # multiples of 64, safe for anonymous users
+
+
+def _generate_pollinations(prompt: str, output_path: str, seed: int = None) -> str:
     """Render a single prompt to a PNG via Pollinations. Returns the path.
 
     Retries on transient failures (timeouts, 5xx, rate limits, non-image
-    responses) with linear backoff. Raises only if every attempt fails.
+    responses) with capped backoff. Raises only if every attempt fails.
     """
     styled_prompt = f"{STYLE_PREFIX}{prompt}"
     url = f"{POLLINATIONS_BASE}/{quote(styled_prompt)}"
@@ -91,6 +102,60 @@ def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
     raise RuntimeError(
         f"image generation failed after {MAX_RETRIES} attempts: {last_err}"
     )
+
+
+def _generate_aihorde(prompt: str, output_path: str) -> str:
+    """Fallback image generation via AI Horde (async submit -> poll -> fetch)."""
+    styled_prompt = f"{STYLE_PREFIX}{prompt}"
+    payload = {
+        "prompt": styled_prompt,
+        "params": {
+            "width": AIHORDE_W, "height": AIHORDE_H, "steps": 22, "n": 1,
+            "cfg_scale": 7, "sampler_name": "k_euler_a",
+        },
+        "nsfw": True, "censor_nsfw": False, "r2": True, "trusted_workers": False,
+    }
+    if AIHORDE_MODELS:
+        payload["models"] = [m.strip() for m in AIHORDE_MODELS.split(",") if m.strip()]
+    headers = {"apikey": AIHORDE_KEY, "Client-Agent": "cryptid-files-pipeline:1.0"}
+
+    resp = requests.post(f"{AIHORDE_API}/generate/async", json=payload,
+                         headers=headers, timeout=40)
+    resp.raise_for_status()
+    job_id = resp.json()["id"]
+    print(f"    [aihorde] queued job {job_id}; waiting (this can take a few min)...")
+
+    deadline = time.time() + AIHORDE_TIMEOUT
+    while time.time() < deadline:
+        time.sleep(AIHORDE_POLL)
+        chk = requests.get(f"{AIHORDE_API}/generate/check/{job_id}", timeout=30).json()
+        if chk.get("faulted"):
+            raise RuntimeError("aihorde job faulted")
+        if chk.get("done"):
+            break
+    else:
+        raise RuntimeError(f"aihorde timed out after {AIHORDE_TIMEOUT}s")
+
+    status = requests.get(f"{AIHORDE_API}/generate/status/{job_id}", timeout=60).json()
+    gens = status.get("generations") or []
+    if not gens:
+        raise RuntimeError("aihorde returned no image")
+    img_bytes = requests.get(gens[0]["img"], timeout=90).content
+    image = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((IMAGE_WIDTH, IMAGE_HEIGHT))
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path, "PNG")
+    print(f"    [aihorde] got image → {output_path}")
+    return output_path
+
+
+def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
+    """Generate one image. Pollinations first (fast); on failure fall back to the
+    free AI Horde so a Pollinations outage doesn't kill the whole run."""
+    try:
+        return _generate_pollinations(prompt, output_path, seed)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [pollinations failed ({e}); falling back to AI Horde...]")
+        return _generate_aihorde(prompt, output_path)
 
 
 # --- Draw-once-and-reuse compositing -----------------------------------------
