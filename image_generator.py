@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import requests
-from PIL import Image
+from PIL import Image, ImageChops
 
 # Pollinations.ai — free text-to-image, no API key required.
 POLLINATIONS_BASE = os.environ.get(
@@ -44,8 +44,8 @@ def _seed_for(prompt: str) -> int:
 def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
     """Render a single prompt to a PNG via Pollinations. Returns the path.
 
-    Retries on transient failures (timeouts, 5xx, rate limits, non-image
-    responses) with capped backoff. Raises only if every attempt fails.
+    Retries on transient failures with capped backoff. Raises if every attempt
+    fails (no fallback — Pollinations-only).
     """
     styled_prompt = f"{STYLE_PREFIX}{prompt}"
     url = f"{POLLINATIONS_BASE}/{quote(styled_prompt)}"
@@ -88,18 +88,86 @@ def generate_image(prompt: str, output_path: str, seed: int = None) -> str:
     )
 
 
-def generate_all_images(script: list[dict], images_dir: str) -> list[dict]:
-    """Draw each scene as its own image from its per-scene prompt.
+# --- Draw-once-and-reuse compositing -----------------------------------------
+#
+# Draw the cryptid ONCE and composite that exact image into every scene, so the
+# creature is IDENTICAL everywhere (no per-scene extra-limb slop). Variety comes
+# from very different framings — wide shots vs big cropped "close-ups" + flips —
+# and the Ken Burns motion added in video_assembler, so it reads as different
+# shots of the same creature, not one image nudged around.
+_LAYOUTS = [
+    {"scale": 0.72, "cx": 0.50, "cy": 0.50, "flip": False},  # wide, full body
+    {"scale": 1.25, "cx": 0.40, "cy": 0.44, "flip": True},   # big close-up, flipped
+    {"scale": 0.60, "cx": 0.56, "cy": 0.52, "flip": False},  # small, off to side
+    {"scale": 1.10, "cx": 0.60, "cy": 0.46, "flip": False},  # big, right
+    {"scale": 0.88, "cx": 0.45, "cy": 0.50, "flip": True},   # medium, flipped
+    {"scale": 1.35, "cx": 0.52, "cy": 0.40, "flip": False},  # very big, dramatic
+]
 
-    Scenes vary (different pose/setting each beat). A shared per-topic seed +
-    the same creature description in every prompt keep the creature roughly
-    on-model, but free text-to-image can't hold it perfectly — the human
-    approval gate is the backstop for the occasional off frame.
+
+def generate_creature_sprite(creature_design: str, out_path: str) -> str:
+    """Draw the cryptid ONCE, isolated on white, as the sprite reused everywhere."""
+    prompt = (
+        f"{creature_design.rstrip('. ')}. Full body side view, the whole creature "
+        "centered and isolated on a plain pure white background. Exactly ONE head, "
+        "correct number of limbs, no extra legs, no extra arms, no extra eyes, no "
+        "extra horns, no extra tails, no duplicated body parts. Simple clean "
+        "shapes, nothing else in the image."
+    )
+    generate_image(prompt, out_path, seed=_seed_for(creature_design))
+    print(f"  [sprite] drew creature → {out_path}")
+    return out_path
+
+
+def _load_sprite(path: str) -> Image.Image:
+    """Load the sprite cropped to the creature (drop the surrounding white)."""
+    im = Image.open(path).convert("RGB")
+    bg = Image.new("RGB", im.size, (255, 255, 255))
+    diff = ImageChops.difference(im, bg).convert("L").point(lambda p: 255 if p > 14 else 0)
+    bbox = diff.getbbox()
+    return im.crop(bbox) if bbox else im
+
+
+def compose_panel(sprite: Image.Image, index: int, out_path: str) -> str:
+    """Composite the identical sprite onto a white page using layout[index].
+
+    Scale can exceed 1.0 so the creature spills past the frame edges = a cropped
+    close-up. Multiply blend drops the white margin cleanly onto the page.
+    """
+    W, H = IMAGE_WIDTH, IMAGE_HEIGHT
+    lay = _LAYOUTS[index % len(_LAYOUTS)]
+
+    s = sprite.transpose(Image.FLIP_LEFT_RIGHT) if lay["flip"] else sprite
+    tw = max(1, int(W * lay["scale"]))
+    th = max(1, int(s.height * tw / s.width))
+    s = s.resize((tw, th))
+    # Offsets may be negative (creature extends off-frame for close-ups); PIL clips.
+    x = int(W * lay["cx"] - tw / 2)
+    y = int(H * lay["cy"] - th / 2)
+
+    layer = Image.new("RGB", (W, H), "white")
+    layer.paste(s, (x, y))
+    ImageChops.multiply(Image.new("RGB", (W, H), "white"), layer).save(out_path, "PNG")
+    return out_path
+
+
+def generate_all_images(script: list[dict], images_dir: str) -> list[dict]:
+    """Draw the cryptid once, then composite that same drawing into every scene.
+
+    Identical creature every scene (no drift, no extra appendages); scenes differ
+    by framing (wide vs close-up + flips) and, in the video, by Ken Burns motion.
     """
     Path(images_dir).mkdir(parents=True, exist_ok=True)
 
     designs = {b.get("creature_design") for b in script if b.get("creature_design")}
-    shared_seed = _seed_for(next(iter(designs))) if len(designs) == 1 else None
+    creature_design = next(iter(designs)) if len(designs) == 1 else None
+    if not creature_design:
+        raise ValueError("creature_design missing/inconsistent; run image_prompter first")
+
+    sprite_path = str(Path(images_dir) / "creature.png")
+    if not Path(sprite_path).exists():
+        generate_creature_sprite(creature_design, sprite_path)
+    sprite = _load_sprite(sprite_path)
 
     result = []
     for i, block in enumerate(script):
@@ -107,9 +175,8 @@ def generate_all_images(script: list[dict], images_dir: str) -> list[dict]:
         if Path(image_path).exists():
             print(f"  [image {i+1}/{len(script)}] exists, skipping")
         else:
-            prompt = block.get("image_prompt") or block.get("creature_design") or block["text"]
-            generate_image(prompt, image_path, seed=shared_seed)
-            print(f"  [image {i+1}/{len(script)}] generated → {image_path}")
+            compose_panel(sprite, i, image_path)
+            print(f"  [image {i+1}/{len(script)}] composed → {image_path}")
         result.append({**block, "image_path": image_path})
     return result
 
