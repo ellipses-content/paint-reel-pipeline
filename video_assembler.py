@@ -205,29 +205,20 @@ def build_video(script, durations, output_path, work_dir) -> str:
     inconsistently across ffmpeg builds — it silently collapsed every image after
     the first to ~0s — so we never rely on it for stills.)
     """
-    # Each still gets a slow Ken Burns zoom (alternating in/out per scene) so the
-    # video never sits static — the main thing that made the reused-creature
-    # composite feel repetitive. Scale to width, pad onto the white 1080x1920
-    # page, then zoompan.
+    # Static clips (no Ken Burns — zooming stills jitters). Scale the art to
+    # width and pad it onto the white 1080x1920 page. Scene-to-scene variety
+    # comes from the composited framing (wide vs close-up) instead of motion.
+    vf = (
+        f"scale={VIDEO_W}:-2,"
+        f"pad={VIDEO_W}:{VIDEO_H}:(ow-iw)/2:{ART_TOP}:white,setsar=1"
+    )
     clip_paths = []
     for i, block in enumerate(script):
         duration = max(durations[i], 0.5)
-        frames = max(1, int(round(duration * FPS)))
-        inc = 0.14 / frames  # total zoom travel over the clip
-        if i % 2 == 0:
-            z = f"min(1.0+{inc:.6f}*in,1.14)"      # zoom in
-        else:
-            z = f"max(1.14-{inc:.6f}*in,1.0)"      # zoom out
-        vf = (
-            f"scale={VIDEO_W}:-2,"
-            f"pad={VIDEO_W}:{VIDEO_H}:(ow-iw)/2:{ART_TOP}:white,"
-            f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-            f"d=1:s={VIDEO_W}x{VIDEO_H}:fps={FPS},setsar=1"
-        )
         clip = Path(work_dir) / f"clip_{i:02d}.mp4"
         cmd = [
             "ffmpeg", "-y",
-            "-loop", "1", "-framerate", str(FPS), "-t", f"{duration:.3f}",
+            "-loop", "1", "-t", f"{duration:.3f}",
             "-i", os.path.abspath(block["image_path"]),
             "-vf", vf,
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
